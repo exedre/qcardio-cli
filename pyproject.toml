@@ -1,0 +1,8 @@
+[build-system]
+requires=["setuptools>=42","wheel"]
+build-backend="setuptools.build_meta"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+bleak = "^0.20.0"
+pyyaml = "^6.0"

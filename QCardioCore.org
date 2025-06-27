@@ -1,0 +1,92 @@
+
+
+* Qardio Core BLE Strap – Developer Notes  
+
+These notes summarize what has been discovered so far about the Qardio
+Core strap’s Bluetooth LE interface. They are written in English and
+formatted in Org-mode so that any programmer can pick up where the
+exploration left off.
+
+** 1. Two Operating Phases  
+
+The strap operates in two distinct modes, each exposing different
+behaviors and BLE characteristics:
+
+*** 1.1 Real-time Streaming (Strap Worn)  
+
+- When the strap is worn on the body, it enters a live-streaming mode.  
+- The key characteristic for this phase is **UUID 14d93de6-5af8-4fd4-adde-02e8954106d2** (handle 0x002C).  
+  - Properties: Notify (0x10) + Write (0x08) + Write Without Response (0x04).  
+  - In practice, the device sends periodic notifications on this characteristic, most likely encoding ECG waveforms or R-R intervals.  
+  - **Open question:** The raw byte values emitted by this characteristic haven’t yet been decoded—further analysis is needed to map them to physiological data points.
+
+
+*** 1.2 Data Extraction (Strap Connected to USB)  
+
+- When the strap is removed and plugged into a USB host, it should
+  switch to a data-dump mode, allowing retrieval of internally logged
+  samples.  
+
+- Evidence suggests that writing a specific “unlock” or initialization
+  code to one of the vendor-specific characteristics triggers the
+  download of stored samples.  
+
+  - The write sequence to characteristic
+    **d235f0ee-48be-4cd6-9888-a70549766aaf** (handle 0x0023) appears
+    to initiate an operation, but the exact protocol and data format
+    remain unclear.
+
+  - No notifications or read-outs have been observed yet; it is not
+    known which characteristic streams the historical samples, nor how
+    they are paged or acknowledged.
+
+** 2. GATT Services & Characteristics Summary  
+
+Below is a concise mapping of the most relevant services and vendor-specific characteristics discovered:
+
+*** 2.1 Standard Services  
+
+- **Device Information (0x180A)**  
+  - Manufacturer Name (0x2A29): “Qardio, Inc.”  
+  - Model Number (0x2A24): “C100”  
+  - Serial Number (0x2A25): e.g. “04324490”  
+  - Firmware Revision (0x2A26): “2.30”  
+  - Software Revision (0x2A28): “1.08”  
+
+- **Battery Service (0x180F)**  
+  - Battery Level (0x2A19): single byte 0–100 (%)
+
+*** 2.2 Vendor-Specific Service (0e3c75d9-6545-4ee6-a651-402e73c709e8)  
+- Char #7 (14d93de6…): Notify + Write + Write Without Response ← real-time ECG/R-R streaming  
+- Char #8 (2ff7d084…): Notify ← raw ECG stream?  
+- Char #9 (3ec5fa1f…): Notify ← command status?  
+- Char #10 (4a24ebc1…): Notify ← beat / R-R notifications  
+- Char #11 (5031c367…): Notify ← mixed ECG / parameters  
+
+*** 2.3 Vendor-Specific Service (5bdb282c-5361-4907-ba87-1293d2f7794b)  
+- Char #1 (712f6949…): Read + Write ← proprietary data blob (changes per session)  
+- Char #2 (81df0465…): Write only ← proprietary commands  
+- Char #3 (f30dac21…): Read + Write ← flag (00 or 01)  
+- Char #4 (d235f0ee…): Read + Write ← device naming
+- Char #5 (61d11c51…): Read + Write ← toggle (00 or 01)  
+- Char #6 (28e16d24…): Read + Write ← session identifier (blob identical to #1)  
+
+** 3. Next Steps for a Programmer  
+1. **Decode Notification Payloads**  
+   - Capture raw bytes from UUID 14d93de6… while wearing the strap.  
+   - Look for patterns corresponding to ECG sampling rate, signed vs. unsigned values, and R-R interval delimiters.  
+
+2. **Reverse-Engineer USB Data Dump**  
+   - Experiment with different “unlock” codes on d235f0ee… and monitor other characteristics for responses.  
+   - Try to identify a streaming characteristic for historical data (e.g. #8–#11).  
+
+3. **Automate GATT Interaction**  
+   - Build a script (e.g. using Bleak or Noble) that sequences the write/read/notify operations for both modes.  
+   - Log all BLE traffic with timestamps for offline analysis.
+
+** 4. Call for Collaboration  
+
+If anyone has detailed knowledge of the Qardio Core vendor-specific
+characteristics—particularly the binary formats used over UUIDs
+14d93de6… or d235f0ee…—please get in touch. Your insights will greatly
+accelerate development of a full data-retrieval library.

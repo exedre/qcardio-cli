@@ -1,0 +1,263 @@
+#+TITLE: Unbrick Qardio ARM with qcardio
+#+AUTHOR: exedre
+#+DATE: [2025-06-27]
+
+This is a quick implementation to “unbrick” my Qardio ARM device that
+the company’s closure would otherwise have rendered entirely useless.
+Now I can read blood pressure measurements—even with some
+limitations—using my own tool.
+
+The program runs only on Linux; I have neither the time nor the
+resources to port it to other operating systems. If anyone wishes to
+undertake the noble task of creating an Android or iOS app, I will
+gladly offer my full support.
+
+I'm also working on Qardio Core (but it seems much more complex).
+
+If you have any information about Qardio devices internals feel free to
+contact me at exedre@gmail.com
+
+
+* BLE Overview
+
+Bluetooth Low Energy (BLE) is a wireless protocol designed for
+low-power devices. It uses the Generic Attribute Profile (GATT), which
+organizes data into **services** (collections of related
+functionality) and **characteristics** (individual data points or
+controls).
+
+qcardio ARM performs these steps under the hood:  
+
+1. **Scan**: discover the device by its MAC address.  
+2. **Connect**: establish a GATT client session.  
+3. **Discover Services/Characteristics**: enumerate the device’s GATT tables.  
+4. **Read/Write**: perform on-demand read or write operations.  
+5. **Notify**: subscribe to notifications for streaming measurement data.
+
+* BLE Services and Characteristics
+** Device Information Service (UUID 0000180a-0000-1000-8000-00805f9b34fb)  
+This standard service exposes metadata about the device. qcardio ARM reads these characteristics at startup:
+
+  - 00002a29-0000-1000-8000-00805f9b34fb :: Manufacturer Name String  
+  - 00002a24-0000-1000-8000-00805f9b34fb :: Model Number String  
+  - 00002a25-0000-1000-8000-00805f9b34fb :: Serial Number String  
+  - 00002a26-0000-1000-8000-00805f9b34fb :: Firmware Revision String  
+  - 00002a28-0000-1000-8000-00805f9b34fb :: Software Revision String  
+  - 00002a27-0000-1000-8000-00805f9b34fb :: Hardware Revision String  
+  - 00002a23-0000-1000-8000-00805f9b34fb :: System ID  
+  - 00002a50-0000-1000-8000-00805f9b34fb :: PnP ID  
+
+** Blood Pressure Service (UUID 00001810-0000-1000-8000-00805f9b34fb)  
+  - Measurement Characteristic (00002a35-0000-1000-8000-00805f9b34fb) [Notify, Indicate]  
+  - Feature Characteristic (00002a49-0000-1000-8000-00805f9b34fb) [Read]  
+
+** Battery Service (UUID 0000180f-0000-1000-8000-00805f9b34fb)  
+  - Battery Level (00002a19-0000-1000-8000-00805f9b34fb) [Read, Notify]  
+
+* Measurement Mechanism
+1. **Activate Measurement** qcardio ARM writes to the vendor-specific
+   Control Point (UUID 583cb5b3-875d-40ed-9098-c39eb0c1983d) with the
+   command bytes `[0xF1, 0x01]`. This triggers the cuff inflation and
+   measurement sequence.
+
+2. **Receive Notifications**  
+   - The Blood Pressure Measurement characteristic streams
+     SFLOAT-encoded values (systolic, diastolic, MAP, optional pulse).
+   - A custom vendor notification (prefix `0xF2`) signals phase
+     changes (inflating, measuring, deflating, aborted, completed).
+
+3. **Progress Updates**  
+
+   qcardio ARM subscribes to both measurement and control notifications. A spinner in the CLI updates in real time:  
+   - **Inflating…**  
+   - **Measuring…**  
+   - **Deflating…**  
+   - **Completed** or **Aborted**  
+
+4. **Result Assembly** 
+
+   Once the final measurement arrives (flag bit indicating “measurement
+   status present”), the CLI stops listening, decodes all values,
+   reads battery level, and stores a timestamped record in the local
+   JSON state.
+
+With these mechanisms, the qcardio ARM tool brings life back to a
+device abandoned by its manufacturer—on Linux only, but fully under
+your control.
+
+
+* The program
+
+Qardio CLI is a plugin-based Python application for managing
+Bluetooth® Qardio devices (Arm, Core, …) via a unified command-line
+interface (CLI). It supports discovery, characteristic read/write,
+continuous polling, measurement, data sets, and persistence.
+
+** Features
+
+- Modular plugin architecture: add new device support without changing core CLI  
+- BLE discovery of services & characteristics, with standard UUID annotations  
+- Interactive DSL with commands: discover, read, write, info, measure, battery, dataset, print  
+- Measurement progress spinner and real-time feedback  
+- Background keep-alive polling to maintain BLE connection  
+- State and history persistence in JSON and readline history  
+- Dataset operations: ls, bless, rm, cp, mv, print with optional filtering  
+
+** Prerequisites
+- Python 3.10+  
+- Linux with BlueZ (hciconfig) or compatible BLE backend  
+- A working BLE adapter (e.g. hci1)  
+- Python packages:
+  - bleak  
+  - pyyaml  
+
+** Installation
+1. Clone the repository:
+   #+BEGIN_SRC sh
+   git clone https://your.git.repo/qcardio.git
+   cd qcardio
+   #+END_SRC
+2. Create and activate a virtual environment:
+   #+BEGIN_SRC sh
+   python3 -m venv .venv
+   source .venv/bin/activate
+   #+END_SRC
+3. Install in editable mode:
+   #+BEGIN_SRC sh
+   pip install --upgrade pip
+   pip install -e .
+   #+END_SRC
+
+** Configuration
+Create a configuration file named `qcardio.conf` in the project root or in `~/.config/qcardio/qcardio.conf`. Example:
+#+BEGIN_SRC ini
+[arm]
+address = 5C:D6:1F:00:00:01
+adapter = hci1
+poll_interval = 60
+timeout = 30
+
+[core]
+address = AA:BB:CC:DD:EE:FF
+adapter = hci1
+poll_interval = 45
+timeout = 20
+#+END_SRC
+
+** Usage
+
+*** Starting the CLI
+Launch the shell for a device plugin:
+#+BEGIN_SRC sh
+qardio arm
+or 
+qardio arm --address 5C:D6:1F:00:00:01 --adapter hci1
+#+END_SRC
+
+*** Available Commands
+- `discover` :: scan for BLE services & characteristics  
+- `read <UUID>` :: read a characteristic by UUID  
+- `write <UUID> <value>` :: write a value to a characteristic  
+- `info` :: read all Device Information Service fields  
+- `battery` :: read battery level percentage  
+- `measure [<file>]` :: perform a measurement and optionally save to file  
+- `dataset <op> ...` :: manipulate named data sets  
+- `print [<name>]` :: display a named data set (default “_”)  
+- `exit`, `EOF` :: exit the shell  
+
+*** Commands
+
+#+begin_example
+
+$ qardio arm
+[INFO] Using local configuration: ./qcardio.conf
+Welcome to Qardio CLI plugin-based. Type 'help'.
+qardio> discover
+[OK] Connected to 5C:D6:1F:08:60:EA (hci1)
+
+Service 0000180a-0000-1000-8000-00805f9b34fb (Device Information):
+  └─ 683001d8-58dc-465c-8229-182a458fd070  [read,write] .................. 
+  └─ 00002a27-0000-1000-8000-00805f9b34fb  [read] ........................  (Hardware Revision String)
+  └─ 00002a50-0000-1000-8000-00805f9b34fb  [read] ........................  (PnP ID)
+  └─ 00002a29-0000-1000-8000-00805f9b34fb  [read] ........................  (Manufacturer Name String)
+  └─ 712f6949-6ce1-4447-994c-d85e078f6bf5  [read,write] .................. 
+  └─ 683001d8-58dc-465c-8229-182a458fd073  [read,write] .................. 
+  └─ 00002a23-0000-1000-8000-00805f9b34fb  [read] ........................  (System ID)
+  └─ 00002a25-0000-1000-8000-00805f9b34fb  [read] ........................  (Serial Number String)
+  └─ 683001d8-58dc-465c-8229-182a458fd075  [read,write] .................. 
+  └─ 00002a24-0000-1000-8000-00805f9b34fb  [read] ........................  (Model Number String)
+  └─ f30dac21-c136-4b13-95e5-c048fa41c408  [read,write] .................. 
+  └─ 683001d8-58dc-465c-8229-182a458fd074  [read,write] .................. 
+  └─ 00002a26-0000-1000-8000-00805f9b34fb  [read] ........................  (Firmware Revision String)
+  └─ 2b525552-4fef-4e3a-8703-152022abf8b3  [write] ....................... 
+  └─ 81df0465-926d-4faf-8f4b-578c6db3b427  [read] ........................ 
+  └─ 683001d8-58dc-465c-8229-182a458fd071  [read,write] .................. 
+  └─ 683001d8-58dc-465c-8229-182a458fd072  [read,write] .................. 
+  └─ 00002a28-0000-1000-8000-00805f9b34fb  [read] ........................  (Software Revision String)
+Service 00001810-0000-1000-8000-00805f9b34fb (Blood Pressure):
+  └─ 00002a35-0000-1000-8000-00805f9b34fb  [notify,indicate] .............  (Blood Pressure Measurement)
+  └─ 107efd5d-de10-4f30-8c1f-3730687fd3ef  [write] ....................... 
+  └─ 583cb5b3-875d-40ed-9098-c39eb0c1983d  [write,notify] ................ 
+  └─ 00002a49-0000-1000-8000-00805f9b34fb  [read] ........................  (Blood Pressure Feature)
+Service 0000180f-0000-1000-8000-00805f9b34fb (Battery):
+  └─ 00002a19-0000-1000-8000-00805f9b34fb  [read,notify] .................  (Battery Level)
+
+qardio> info
+└─ 00002a29-0000-1000-8000-00805f9b34fb  [read]  Qardio, Inc                (Manufacturer Name String)
+└─ 00002a24-0000-1000-8000-00805f9b34fb  [read]  A100                       (Model Number String)
+└─ 00002a26-0000-1000-8000-00805f9b34fb  [read]  1.6                        (Firmware Revision String)
+└─ 00002a27-0000-1000-8000-00805f9b34fb  [read]  Cp_A2_p2                   (Hardware Revision String)
+└─ 00002a23-0000-1000-8000-00805f9b34fb  [read]  5cd61ffffe0860ea           (System ID)
+└─ 00002a28-0000-1000-8000-00805f9b34fb  [read]  1.6                        (Software Revision String)
+└─ 00002a50-0000-1000-8000-00805f9b34fb  [read]  
+L                    (PnP ID)
+└─ 00002a25-0000-1000-8000-00805f9b34fb  [read]  0549098                    (Serial Number String)
+
+qardio> battery
+Battery level: 69%
+
+#+end_example
+
+
+** Plugin Architecture
+Each device plugin is a Python module under `qcardio/commands/`, exposing:
+- `Plugin(cfg, state)` class with methods:
+  - `discover()`  
+  - `read(uuid)`  
+  - `write(uuid, val)`  
+  - `measure(progress)`  
+  - `get_battery()`  
+  - `get_device_info()`  
+  - `get_features()`  
+- `Phase` enum for measurement phases  
+
+Core CLI (`qcardio/cli.py`) dynamically loads `qcardio.commands.<device>.Plugin`.
+
+* Dataset Operations
+The `dataset` command manages in-memory or persisted lists/dicts:
+
+| Operation | Description                                |
+|-----------+--------------------------------------------|
+| `ls`      | list all named data sets                   |
+| `bless n` | assign current “_” data set to name n      |
+| `rm n`    | remove named data set n                    |
+| `cp s d`  | copy data set s to d (with optional filter)|
+| `mv o n`  | rename data set o to n                     |
+
+Example with filter:
+#+BEGIN_SRC sh
+qardio> dataset cp measurements recent --if timestamp=2025-06
+#+END_SRC
+
+Use `print <name>` to display a data set.
+
+* Persistence
+- **State** saved to `~/.config/qcardio/state.json` (measurements, progress, errors, datasets)  
+- **History** saved to `~/.config/qcardio/history` via readline  
+
+* License
+MIT License
+
+* Contact
+For issues or contributions, please open a GitHub issue or pull request at:
+https://github.com/exedre/qcardio  
